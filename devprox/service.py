@@ -2,24 +2,33 @@ import trio
 import typing as t
 from socket import AF_INET6
 from errno import ECONNREFUSED, errorcode
+from contextlib import asynccontextmanager
+from structlog import BoundLogger
 
 class Service:
     _service_wanted: trio.Event
     _service_started: trio.Event
     _process: t.Optional[trio.Process] = None
     _port_map: t.Optional[t.Mapping[int, int]] = None
+    _users = 0
+    _nursery: trio.Nursery
+    _log: BoundLogger
 
-    def __init__(self, *, command, ports, nursery, env={}):
+    def __init__(self, *, command, ports, nursery, logger: BoundLogger, env={}):
         self.command = command
         self.env = env
         self.ports = ports
+        self._nursery = nursery
         self._service_wanted = trio.Event()
         self._service_started = trio.Event()
+        self._log = logger.bind(service=self)
         nursery.start_soon(self._run_loop)
 
     async def _run_loop(self):
         while True:
             await self._service_wanted.wait()
+
+            # TODO: flapping detection / exponential backoff
 
             self._port_map = {}
             for port in self.ports:
@@ -47,10 +56,24 @@ class Service:
 
             self._service_started.set()
             await self._process.wait()
-
             self._process = None
-            self._service_wanted = trio.Event()
+
+            # We don't reset _service_wanted; if the service is idle it would
+            # have been reset at the start of the idle time by _shutdown_timer.
             self._service_started = trio.Event()
+    
+    async def _shutdown_timer(self, task_status):
+        self._log.debug('shutdown timer started')
+        task_status.started()
+        self._service_wanted = trio.Event()
+
+        with trio.move_on_after(600):
+            await self._service_wanted.wait()
+            self._log.debug('shutdown timer stopped because service was wanted')
+            return
+        
+        self._log.debug('shutting down')
+        await self.stop()
     
     async def start(self):
         """Ensure the service has started and is ready to connect to.
@@ -64,8 +87,29 @@ class Service:
         await self._service_started.wait()
         return self._port_map
     
+    @asynccontextmanager
+    async def use(self):
+        self._log.debug('use entered', existing_users=self._users)
+        self._service_wanted.set()
+        await self._service_started.wait()
+        self._users += 1
+        try:
+            yield self._port_map
+        finally:
+            self._users -= 1
+            self._log.debug('use exited', existing_users=self._users)
+            if not self._users:
+                # We're using start here, instead of start_soon, because we
+                # want self._shutdown_timer to initialise synchronously. If
+                # we'd used start_soon, another task could have entered a
+                # use() context between us launching it and it
+                # unsetting _service_wanted.
+                await self._nursery.start(self._shutdown_timer)
+    
     async def stop(self):
         """Shut down the service, if it is running."""
         if self._process is not None:
             self._process.terminate()
+            # TODO: block until process is actually shut down
+            # TODO: forcibly kill process if needed after a timeout
     

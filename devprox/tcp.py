@@ -46,14 +46,15 @@ def tcp_handler_factory(service_dict):
 
         port_map = await service.start()
 
-        try:
-            mapped_port = port_map[target_port]
-        except KeyError:
-            logger.error('service doesn\'t use port', service=service, port=target_port)
-            await stream.aclose()
-            return
-            
-        await proxy(stream, '::1', port_map[target_port])
+        async with service.use() as port_map:
+            try:
+                mapped_port = port_map[target_port]
+            except KeyError:
+                logger.error('service doesn\'t use port', service=service, port=target_port)
+                await stream.aclose()
+                return
+                
+            await proxy(stream, '::1', mapped_port)
     return tcp_connection_handler
 
 
@@ -81,7 +82,8 @@ async def main():
                     command=('sh', '-c', 'cd ~/Projects/home/dist && python -m http.server --bind ::1 $PORT_80'),
                     ports=(80,),
                     nursery=nursery,
-                    env = environ,
+                    env=environ,
+                    logger=structlog.get_logger(),
                 )
         }
         handler = tcp_handler_factory(services)
