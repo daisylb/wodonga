@@ -24,68 +24,82 @@ class Service:
         self._log = logger.bind(service=self)
         nursery.start_soon(self._run_loop)
 
+    # ## Run loop
+    #
+    # This task is responsible for managing the subprocess that runs the
+    # actual service.
+    # It starts up in `__init__`, and should stay running for the
+    # lifetime of the server.
+    #
+    # It runs a loop that waits for the service to be requested, starts it up,
+    # waits for it to exit, cleans up, and repeats.
     async def _run_loop(self):
         while True:
             await self._service_wanted.wait()
 
             # TODO: flapping detection / exponential backoff
 
+            # We start off by constructing a mapping between the ports we're
+            # listening on, and the ports we're expecting the service to
+            # listen on for us to proxy to.
             self._port_map = {}
-            for port in self.ports:
-                # TODO: do this concurrently
-                s = trio.socket.socket(family=AF_INET6)
-                await s.bind(('::1', 0, 0, 0))
-                _, alloc_port, _, _ = s.getsockname()
-                s.close()
-                self._port_map[port] = alloc_port
-            
-            env = {**self.env, **{f'PORT_{port}': f'{alloc_port}' for port, alloc_port in self._port_map.items()}}
+            # Trio doesn't give us a way to call `nursery.start_soon()` and
+            # then access the result, so we can't call `get_free_port()`
+            # directly.
+            # Instead, we define an async closure that awaits on it and
+            # assigns the result to `self._port_map()`, and call that.
+            async def get_port(port_to_map):
+                self._port_map[port_to_map] = await get_free_port()
+            async with trio.open_nursery() as nursery:
+                for port in self.ports:
+                    nursery.start_soon(get_port, port)
 
+            # The mapping is communicated to our subprocess via environment
+            # variables.
+            env = {
+                **self.env,
+                **{f'PORT_{port}': str(alloc_port) for port, alloc_port in self._port_map.items()}
+            }
+
+            # We then start up the process, wait for it to listen on all of
+            # the ports we're expecting, and fire the `_service_started` event.
             self._process = await trio.open_process(self.command, env=env)
             
-            for port in self._port_map.values():
-                while True:
-                    try:
-                        stream = await trio.open_tcp_stream(host='::1', port=port)
-                    except OSError as e:
-                        pass
-                    else:
-                        await stream.aclose()
-                        break
-                    await trio.sleep(0.1)
+            async with trio.open_nursery() as nursery:
+                for port in self._port_map.values():
+                    nursery.start_soon(wait_for_port, port)
 
             self._service_started.set()
+
+            # With the service started, we wait for it to stop, and clean up.
+            #
+            # Note that we _don't_ reset `self._service_wanted` here! If the
+            # service was killed by the shutdown timer, it would have reset
+            # `_service_wanted` itself. If the service crashed, we want to
+            # restart it straight away.
             await self._process.wait()
             self._process = None
-
-            # We don't reset _service_wanted; if the service is idle it would
-            # have been reset at the start of the idle time by _shutdown_timer.
             self._service_started = trio.Event()
     
+    # ## Shutdown timer
+    #
+    # This task is started when the service is running, but there are no open
+    # connections; it's responsible for terminating the task after an idle
+    # timeout.
     async def _shutdown_timer(self, task_status):
         self._log.debug('shutdown timer started')
         task_status.started()
         self._service_wanted = trio.Event()
 
+        # If the service gets used while we're waiting for the timeout to expire, `self._service_wanted` will fire, and this task stops.
         with trio.move_on_after(600):
             await self._service_wanted.wait()
             self._log.debug('shutdown timer stopped because service was wanted')
             return
         
+        # Otherwise, we shut down the process.
         self._log.debug('shutting down')
         await self.stop()
-    
-    async def start(self):
-        """Ensure the service has started and is ready to connect to.
-
-        If you await on this function, the service will almost certainly be
-        running and ready to connect to when it returns. (There are
-        unavoidable but rare circumstances where it might not if it just so
-        happens to crash at the exact right moment.)
-        """
-        self._service_wanted.set()
-        await self._service_started.wait()
-        return self._port_map
     
     @asynccontextmanager
     async def use(self):
@@ -113,3 +127,21 @@ class Service:
             # TODO: block until process is actually shut down
             # TODO: forcibly kill process if needed after a timeout
     
+
+async def get_free_port():
+    s = trio.socket.socket(family=AF_INET6)
+    await s.bind(('::1', 0, 0, 0))
+    _, alloc_port, _, _ = s.getsockname()
+    s.close()
+    return alloc_port
+
+async def wait_for_port(port):
+    while True:
+        try:
+            stream = await trio.open_tcp_stream(host='::1', port=port)
+        except OSError as e:
+            pass
+        else:
+            await stream.aclose()
+            break
+        await trio.sleep(0.1)

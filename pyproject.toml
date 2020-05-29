@@ -12,6 +12,8 @@ pytest-trio = "^0.5.2"
 structlog = "^20.1.0"
 
 [tool.poetry.dev-dependencies]
+pycco = "^0.6.0"
+watchdog = "^0.10.2"
 
 [build-system]
 requires = ["poetry>=0.12"]

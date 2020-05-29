@@ -44,8 +44,6 @@ def tcp_handler_factory(service_dict):
             await stream.aclose()
             return
 
-        port_map = await service.start()
-
         async with service.use() as port_map:
             try:
                 mapped_port = port_map[target_port]
