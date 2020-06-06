@@ -4,6 +4,12 @@ from socket import AF_INET6
 from errno import ECONNREFUSED, errorcode
 from contextlib import asynccontextmanager
 from structlog import BoundLogger
+from signal import SIGINT, SIGKILL, SIGTERM
+from os import killpg
+
+TIMEOUT_LEADER_CANCEL = 3
+TIMEOUT_ORPHAN_CANCEL = 3
+TIMEOUT_CANCEL = TIMEOUT_LEADER_CANCEL + TIMEOUT_ORPHAN_CANCEL + 1
 
 class Service:
     _service_wanted: trio.Event
@@ -13,15 +19,17 @@ class Service:
     _users = 0
     _nursery: trio.Nursery
     _log: BoundLogger
+    signal: int
 
-    def __init__(self, *, command, ports, nursery, logger: BoundLogger, env={}):
+    def __init__(self, *, command, ports, nursery, logger: BoundLogger, env={}, signal=SIGINT):
         self.command = command
         self.env = env
         self.ports = ports
+        self.signal = signal
         self._nursery = nursery
         self._service_wanted = trio.Event()
         self._service_started = trio.Event()
-        self._log = logger.bind(service=self)
+        self._log = logger
         nursery.start_soon(self._run_loop)
 
     # ## Run loop
@@ -63,21 +71,51 @@ class Service:
 
             # We then start up the process, wait for it to listen on all of
             # the ports we're expecting, and fire the `_service_started` event.
-            self._process = await trio.open_process(self.command, env=env)
-            
-            async with trio.open_nursery() as nursery:
-                for port in self._port_map.values():
-                    nursery.start_soon(wait_for_port, port)
+            try:
+                self._process = await trio.open_process(
+                    self.command,
+                    env=env,
+                    start_new_session=True,
+                )
+                
+                async with trio.open_nursery() as nursery:
+                    for port in self._port_map.values():
+                        nursery.start_soon(wait_for_port, port)
 
-            self._service_started.set()
+                self._service_started.set()
 
-            # With the service started, we wait for it to stop, and clean up.
-            #
-            # Note that we _don't_ reset `self._service_wanted` here! If the
-            # service was killed by the shutdown timer, it would have reset
-            # `_service_wanted` itself. If the service crashed, we want to
-            # restart it straight away.
-            await self._process.wait()
+                # With the service started, we wait for it to stop, and clean up.
+                #
+                # Note that we _don't_ reset `self._service_wanted` here! If the
+                # service was killed by the shutdown timer, it would have reset
+                # `_service_wanted` itself. If the service crashed, we want to
+                # restart it straight away.
+                await self._process.wait()
+            finally:
+                with trio.move_on_after(TIMEOUT_CANCEL) as scope:
+                    scope.shield = True
+                    if self._process.returncode is None:
+                        self._log.debug('politely asking leader to quit', pid=self._process.pid, signal=self.signal)
+                        self._process.send_signal(self.signal)
+                        with trio.move_on_after(TIMEOUT_LEADER_CANCEL):
+                            await self._process.wait()
+                    if self._process.returncode is None:
+                        self._log.debug('forcing leader to quit')
+                        self._process.send_signal(SIGKILL)
+                        await self._process.wait()
+                    self._log.debug('going to try terminating any orphans', pgid=self._process.pid, signal=SIGTERM)
+                    try:
+                        killpg(self._process.pid, SIGTERM)
+                        with trio.move_on_after(TIMEOUT_ORPHAN_CANCEL):
+                            while True:
+                                killpg(self._process.pid, 0)
+                                await trio.sleep(0.1)
+                        killpg(self._process.pid, SIGKILL)
+                    except ProcessLookupError:
+                        self._log.debug('process left no orphans')
+                        pass
+                    else:
+                        self._log.debug('killed at least one orphan')
             self._process = None
             self._service_started = trio.Event()
     
@@ -123,9 +161,16 @@ class Service:
     async def stop(self):
         """Shut down the service, if it is running."""
         if self._process is not None:
-            self._process.terminate()
-            # TODO: block until process is actually shut down
-            # TODO: forcibly kill process if needed after a timeout
+            with trio.move_on_after(5):
+                self._log.debug('politely asking process to stop')
+                self._process.send_signal(self.signal)
+                exit_code = await self._process.wait()
+                self._log.debug('process stopped', exit_code=exit_code)
+                return
+            self._log.debug('slightly less politely asking OS to stop process')
+            self._process.kill()
+            exit_code = await self._process.wait()
+            self._log.debug('process stopped', exit_code=exit_code)
     
 
 async def get_free_port():
