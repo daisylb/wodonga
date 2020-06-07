@@ -1,8 +1,9 @@
 [tool.poetry]
-name = "devprox"
-version = "0.1.0"
+name = "wodonga"
+version = "0.1"
 description = ""
 authors = ["Leigh Brenecki <l@leigh.net.au>"]
+license = "Round Robin 1.0.0"
 
 [tool.poetry.dependencies]
 python = "^3.8"
