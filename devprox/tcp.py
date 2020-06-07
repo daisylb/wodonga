@@ -1,9 +1,6 @@
 import trio
 import re
 import structlog
-from os import environ
-
-from .service import Service
 
 REDIR_RE = re.compile(r'([0-9a-f\:]+)\[([0-9]+)\] <- ([0-9a-f\:]+)\[([0-9]+)\] <- ([0-9a-f\:]+)\[([0-9]+)\]')
 
@@ -67,25 +64,9 @@ async def one_way_proxy(source: trio.abc.ReceiveStream, sink: trio.abc.SendStrea
 async def proxy(incoming: trio.SocketStream, target_host: str, target_port: int):
     outgoing = await trio.open_tcp_stream(target_host, target_port)
 
-    async with trio.open_nursery() as nursery:
-        nursery.start_soon(one_way_proxy, incoming, outgoing)
-        nursery.start_soon(one_way_proxy, outgoing, incoming)
-    
-
-async def main():
-    async with trio.open_nursery() as nursery:
-        services = {
-            'fd7f:1fa7:68ca:202f:4b5c:aef6:fc98:c103':
-                Service(
-                    command=('sh', '-c', 'cd ~/Projects/home/dist && python -m http.server --bind ::1 $PORT_80'),
-                    ports=(80,),
-                    nursery=nursery,
-                    env=environ,
-                    logger=structlog.get_logger(),
-                )
-        }
-        handler = tcp_handler_factory(services)
-        await trio.serve_tcp(handler, 55555, host='::1')
-
-if __name__ == "__main__":
-    trio.run(main)
+    try:
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(one_way_proxy, incoming, outgoing)
+            nursery.start_soon(one_way_proxy, outgoing, incoming)
+    except Exception as e:
+        print(e)

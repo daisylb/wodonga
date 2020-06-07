@@ -10,6 +10,9 @@ trio = "^0.15.1"
 pytest = "^5.4.2"
 pytest-trio = "^0.5.2"
 structlog = "^20.1.0"
+appdirs = "^1.4.4"
+tomlkit = "^0.6.0"
+cityhash = "^0.2.3"
 
 [tool.poetry.dev-dependencies]
 pycco = "^0.6.0"
