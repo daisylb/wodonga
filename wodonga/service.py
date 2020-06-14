@@ -91,6 +91,10 @@ class Service:
                 # `_service_wanted` itself. If the service crashed, we want to
                 # restart it straight away.
                 await self._process.wait()
+            # This `finally` block can be reached one of two ways:
+            #
+            # 1. The process exits, either because it was terminated by `.exit()` or because it stopped unexpectedly, or
+            # 2. The Trio cancel scope we're running in gets cancelled (e.g. because we got a `SIGINT` or `SIGTERM` ourselves), in which case the process is still running.
             finally:
                 with trio.move_on_after(TIMEOUT_CANCEL) as scope:
                     scope.shield = True
@@ -103,19 +107,24 @@ class Service:
                         self._log.debug('forcing leader to quit')
                         self._process.send_signal(SIGKILL)
                         await self._process.wait()
-                    self._log.debug('going to try terminating any orphans', pgid=self._process.pid, signal=SIGTERM)
+
                     try:
-                        killpg(self._process.pid, SIGTERM)
-                        with trio.move_on_after(TIMEOUT_ORPHAN_CANCEL):
-                            while True:
-                                killpg(self._process.pid, 0)
-                                await trio.sleep(0.1)
-                        killpg(self._process.pid, SIGKILL)
+                        await killpg_no_zombie(self._process.pid, SIGTERM, self._log)
                     except ProcessLookupError:
-                        self._log.debug('process left no orphans')
+                        # the process cleaned up after itself
                         pass
                     else:
-                        self._log.debug('killed at least one orphan')
+                        self._log.warn('process left orphans')
+                        try:
+                            with trio.move_on_after(TIMEOUT_ORPHAN_CANCEL):
+                                while True:
+                                    await killpg_no_zombie(self._process.pid, 0, self._log)
+                                    await trio.sleep(0.1)
+                            await killpg_no_zombie(self._process.pid, SIGKILL, self._log)
+                        except ProcessLookupError:
+                            self._log.debug('all orphans exited')
+                        else:
+                            self._log.debug('forcibly killed orphans')
             self._process = None
             self._service_started = trio.Event()
     
@@ -190,3 +199,13 @@ async def wait_for_port(port):
             await stream.aclose()
             break
         await trio.sleep(0.1)
+
+async def killpg_no_zombie(pgid, signal, logger):
+    for i in range(9, -1, -1):
+        try:
+            return killpg(pgid, signal)
+        except PermissionError:
+            logger.debug('got PermissionError trying to killpg', pgid=pgid, signal=signal, remaining_tries=i)
+            if i == 0:
+                raise
+        await trio.sleep(0.05)

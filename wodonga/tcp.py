@@ -53,20 +53,21 @@ def tcp_handler_factory(service_dict):
     return tcp_connection_handler
 
 
-async def one_way_proxy(source: trio.abc.ReceiveStream, sink: trio.abc.SendStream):
-        while True:
-            data = await source.receive_some()
-            if data == b'':
-                break
-            await sink.send_all(data)
+async def one_way_proxy(source: trio.abc.ReceiveStream, sink: trio.abc.SendStream, cancel_scope: trio.CancelScope):
+        try:
+            while True:
+                data = await source.receive_some()
+                if data == b'':
+                    break
+                await sink.send_all(data)
+        except trio.BrokenResourceError:
+            print('broken pipe')
+        cancel_scope.cancel()
 
 
 async def proxy(incoming: trio.SocketStream, target_host: str, target_port: int):
     outgoing = await trio.open_tcp_stream(target_host, target_port)
 
-    try:
-        async with trio.open_nursery() as nursery:
-            nursery.start_soon(one_way_proxy, incoming, outgoing)
-            nursery.start_soon(one_way_proxy, outgoing, incoming)
-    except Exception as e:
-        print(e)
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(one_way_proxy, incoming, outgoing, nursery.cancel_scope)
+        nursery.start_soon(one_way_proxy, outgoing, incoming, nursery.cancel_scope)
