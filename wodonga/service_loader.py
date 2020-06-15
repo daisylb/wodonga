@@ -35,6 +35,7 @@ class ServiceManager:
                 name = conf.stem
                 service = Service(
                     command=data['command'],
+                    workdir=Path(data.get('workdir', '~')).expanduser(),
                     ports=data['ports'] if 'ports' in data else [data['port']],
                     nursery=nursery,
                     logger=logger.bind(service=name),

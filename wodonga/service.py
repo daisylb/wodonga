@@ -21,8 +21,9 @@ class Service:
     _log: BoundLogger
     signal: int
 
-    def __init__(self, *, command, ports, nursery, logger: BoundLogger, env={}, signal=SIGINT):
+    def __init__(self, *, command, workdir, ports, nursery, logger: BoundLogger, env={}, signal=SIGINT):
         self.command = command
+        self.workdir = workdir
         self.env = env
         self.ports = ports
         self.signal = signal
@@ -74,6 +75,7 @@ class Service:
             try:
                 self._process = await trio.open_process(
                     self.command,
+                    cwd=self.workdir,
                     env=env,
                     start_new_session=True,
                 )
