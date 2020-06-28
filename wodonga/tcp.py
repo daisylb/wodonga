@@ -1,6 +1,7 @@
 import trio
 import re
 import structlog
+import errno
 
 REDIR_RE = re.compile(r'([0-9a-f\:]+)\[([0-9]+)\] <- ([0-9a-f\:]+)\[([0-9]+)\] <- ([0-9a-f\:]+)\[([0-9]+)\]')
 
@@ -48,8 +49,10 @@ def tcp_handler_factory(service_dict):
                 logger.error('service doesn\'t use port', service=service, port=target_port)
                 await stream.aclose()
                 return
-                
-            await proxy(stream, '::1', mapped_port)
+            try: 
+               await proxy(stream, '::1', mapped_port)
+            except OSError as e:
+                logger.error('Error connecting to service', service=service, port=target_port, mapped_port=mapped_port, exception=e)
     return tcp_connection_handler
 
 
@@ -66,7 +69,20 @@ async def one_way_proxy(source: trio.abc.ReceiveStream, sink: trio.abc.SendStrea
 
 
 async def proxy(incoming: trio.SocketStream, target_host: str, target_port: int):
-    outgoing = await trio.open_tcp_stream(target_host, target_port)
+    raise_after = trio.current_time() + 20
+    while True:
+        try:
+            outgoing = await trio.open_tcp_stream(target_host, target_port)
+        except OSError as e:
+            if not isinstance(e.__cause__, ConnectionRefusedError):
+                raise
+            if trio.current_time() > raise_after:
+                raise
+        else:
+            break
+        await trio.sleep(0.1)
+
+
 
     async with trio.open_nursery() as nursery:
         nursery.start_soon(one_way_proxy, incoming, outgoing, nursery.cancel_scope)

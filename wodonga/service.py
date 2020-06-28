@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from structlog import BoundLogger
 from signal import SIGINT, SIGKILL, SIGTERM
 from os import killpg
+from cityhash import CityHash32
 
 TIMEOUT_LEADER_CANCEL = 3
 TIMEOUT_ORPHAN_CANCEL = 3
@@ -70,8 +71,7 @@ class Service:
                 **{f'PORT_{port}': str(alloc_port) for port, alloc_port in self._port_map.items()}
             }
 
-            # We then start up the process, wait for it to listen on all of
-            # the ports we're expecting, and fire the `_service_started` event.
+            # We then start up the process and fire the `_service_started` event.
             try:
                 self._process = await trio.open_process(
                     self.command,
@@ -79,10 +79,6 @@ class Service:
                     env=env,
                     start_new_session=True,
                 )
-                
-                async with trio.open_nursery() as nursery:
-                    for port in self._port_map.values():
-                        nursery.start_soon(wait_for_port, port)
 
                 self._service_started.set()
 
