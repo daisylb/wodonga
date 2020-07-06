@@ -51,8 +51,8 @@ def tcp_handler_factory(service_dict):
                 return
             try: 
                await proxy(stream, '::1', mapped_port)
-            except OSError as e:
-                logger.error('Error connecting to service', service=service, port=target_port, mapped_port=mapped_port, exception=e)
+            except OSError:
+                logger.error('Error connecting to service', service=service, port=target_port, mapped_port=mapped_port, exc_info=True)
     return tcp_connection_handler
 
 

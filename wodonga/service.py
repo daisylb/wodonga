@@ -79,6 +79,7 @@ class Service:
                     env=env,
                     start_new_session=True,
                 )
+                self._log.info('process started', pid=self._process.pid)
 
                 self._service_started.set()
 
@@ -95,6 +96,7 @@ class Service:
             # 2. The Trio cancel scope we're running in gets cancelled (e.g. because we got a `SIGINT` or `SIGTERM` ourselves), in which case the process is still running.
             finally:
                 with trio.move_on_after(TIMEOUT_CANCEL) as scope:
+                    self._log.debug('cleaning up', pid=self._process.pid, returncode=self._process.returncode)
                     scope.shield = True
                     if self._process.returncode is None:
                         self._log.debug('politely asking leader to quit', pid=self._process.pid, signal=self.signal)

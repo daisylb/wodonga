@@ -17,6 +17,7 @@ async def main():
         nursery.start_soon(handle_signals, nursery, logger)
         manager = ServiceManager(nursery=nursery, logger=logger)
         handler = tcp_handler_factory(manager)
+        logger.info('starting up', port=55555)
         await trio.serve_tcp(handler, 55555, host='::1')
 
 if __name__ == "__main__":

@@ -43,6 +43,7 @@ class ServiceManager:
                 )
                 self.service_map[name] = service
                 self.ip_map[ip] = name
+                self._log.debug('service mapped', name=name, ip=ip)
 
     def __getitem__(self, key):
         ip = IPv6Address(key)
