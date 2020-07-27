@@ -27,6 +27,7 @@ async def get_real_target(stream: trio.SocketStream, logger):
 
 def tcp_handler_factory(service_dict):
     async def tcp_connection_handler(stream):
+        print(stream.socket.getpeername(), stream.socket.getsockname())
         logger = structlog.get_logger(connection_id=f'{trio.current_time()}.{id(stream)}')
         try:
             target_ip, target_port = await get_real_target(stream, logger)

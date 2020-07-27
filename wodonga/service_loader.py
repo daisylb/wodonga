@@ -9,7 +9,7 @@ from structlog import BoundLogger
 from cityhash import CityHash32
 
 default_dir = user_data_dir("Wodonga", "Leigh Brenecki")
-network = IPv6Network('fd7f:1fa7:68ca:202f:4b5c:aef6::/96')
+network = IPv6Network('fd7f:1fa7:68ca:202f:f34a:65d7::/96')
 
 class ServiceManager:
     service_map: t.Dict[str, Service]
