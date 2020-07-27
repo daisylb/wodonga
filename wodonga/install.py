@@ -19,6 +19,8 @@ DARWIN_LAUNCH_DAEMON = """
         <string>/bin/bash</string>
         <string>-c</string>
         <string><![CDATA[
+sysctl -w net.inet.ip.forwarding=1
+sysctl -w net.inet6.ip6.forwarding=1
 route add -inet6 {network_cidr} ::1
 echo "rdr pass inet6 proto tcp from any to {network_cidr} port 1:65535 -> ::1 port {server_port}" | pfctl -a "com.apple/250.wodonga.{dns_prefix}" -Ef -
 ifconfig feth99 create
