@@ -1,11 +1,13 @@
 import sys
-from appdirs import user_log_dir
+from appdirs import AppDirs
 from pathlib import Path
 import os
 from shutil import chown
 from subprocess import check_call
 from ipaddress import IPv6Network
 from cityhash import CityHash32
+
+dirs = AppDirs("Wodonga", "Leigh Brenecki")
 
 DARWIN_LAUNCH_DAEMON = """
 <?xml version="1.0" encoding="UTF-8"?>
@@ -39,6 +41,10 @@ EOI
     </array>
     <key>RunAtLoad</key>
     <true/>
+    <key>StandardOutPath</key>
+    <string>{global_log_path}</string>
+    <key>StandardErrorPath</key>
+    <string>{global_log_path}</string>
 </dict>
 </plist>
 """
@@ -80,7 +86,8 @@ def install_darwin():
         "network_cidr": network_cidr,
         "server_port": '55555',
         "python_bin": sys.executable,
-        "log_path": user_log_dir("Wodonga", "Leigh Brenecki") + '/server.log',
+        "global_log_path": dirs.site_data_dir + f'/setup.{dns_prefix}.log',
+        "log_path": dirs.user_log_dir + '/server.log',
     }
 
     launch_daemon_text = DARWIN_LAUNCH_DAEMON.format(**context)

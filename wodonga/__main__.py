@@ -11,6 +11,7 @@ async def handle_signals(nursery: trio.Nursery, log: structlog.BoundLogger):
             log.info('shutdown requested', signal=sig)
             nursery.cancel_scope.cancel()
 
+
 async def main():
     async with trio.open_nursery() as nursery:
         logger = structlog.get_logger()
@@ -18,7 +19,7 @@ async def main():
         manager = ServiceManager(nursery=nursery, logger=logger)
         handler = tcp_handler_factory(manager)
         logger.info('starting up', port=55555)
-        await trio.serve_tcp(handler, 55555, host='::1')
+        await trio.serve_tcp(handler, 55555, host='::')
 
 if __name__ == "__main__":
     trio.run(main)
