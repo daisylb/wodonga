@@ -1,10 +1,11 @@
-import sys
-from appdirs import AppDirs
-from pathlib import Path
 import os
+import sys
+from ipaddress import IPv6Network
+from pathlib import Path
 from shutil import chown
 from subprocess import check_call
-from ipaddress import IPv6Network
+
+from appdirs import AppDirs
 from cityhash import CityHash32
 
 dirs = AppDirs("Wodonga", "Leigh Brenecki")
@@ -75,7 +76,8 @@ DARWIN_LAUNCH_AGENT = """
 
 """
 
-GLOBAL_NETWORK = IPv6Network('fd7f:1fa7:68ca:202f::/64')
+GLOBAL_NETWORK = IPv6Network("fd7f:1fa7:68ca:202f::/64")
+
 
 def install_darwin():
     dns_prefix = input("DNS prefix: ")
@@ -84,27 +86,34 @@ def install_darwin():
     context = {
         "dns_prefix": dns_prefix,
         "network_cidr": network_cidr,
-        "server_port": '55555',
+        "server_port": "55555",
         "python_bin": sys.executable,
-        "global_log_path": dirs.site_data_dir + f'/setup.{dns_prefix}.log',
-        "log_path": dirs.user_log_dir + '/server.log',
+        "global_log_path": dirs.site_data_dir + f"/setup.{dns_prefix}.log",
+        "log_path": dirs.user_log_dir + "/server.log",
     }
 
     launch_daemon_text = DARWIN_LAUNCH_DAEMON.format(**context)
     launch_agent_text = DARWIN_LAUNCH_AGENT.format(**context)
-    home = Path('~' + os.environ['SUDO_USER']).expanduser()
-    launch_agent_path = home / 'Library' / 'LaunchAgents' / 'au.net.leigh.wodonga.server.plist'
-    launch_daemon_path = Path('/Library/LaunchDaemons') / f'au.net.leigh.wodonga.{dns_prefix}.plist'
+    home = Path("~" + os.environ["SUDO_USER"]).expanduser()
+    launch_agent_path = (
+        home / "Library" / "LaunchAgents" / "au.net.leigh.wodonga.server.plist"
+    )
+    launch_daemon_path = (
+        Path("/Library/LaunchDaemons") / f"au.net.leigh.wodonga.{dns_prefix}.plist"
+    )
 
-    with launch_daemon_path.open('x') as f:
+    with launch_daemon_path.open("x") as f:
         f.write(launch_daemon_text)
-    
-    with launch_agent_path.open('x') as f:
+
+    with launch_agent_path.open("x") as f:
         f.write(launch_agent_text)
-    
-    chown(launch_agent_path, user=os.environ['SUDO_USER'])
-    check_call(('launchctl', 'bootstrap', 'system', launch_daemon_path))
-    check_call(('launchctl', 'bootstrap', f'gui/{os.environ["SUDO_UID"]}', launch_agent_path))
-    
+
+    chown(launch_agent_path, user=os.environ["SUDO_USER"])
+    check_call(("launchctl", "bootstrap", "system", launch_daemon_path))
+    check_call(
+        ("launchctl", "bootstrap", f'gui/{os.environ["SUDO_UID"]}', launch_agent_path)
+    )
+
+
 if __name__ == "__main__":
     install_darwin()
