@@ -1,16 +1,11 @@
 import typing as t
 from contextlib import asynccontextmanager
-from os import killpg
-from signal import SIGINT, SIGKILL, SIGTERM
 from socket import AF_INET6
+from signal import SIGINT
 
 import trio
 from structlog import BoundLogger
-
-TIMEOUT_LEADER_CANCEL = 3
-TIMEOUT_ORPHAN_CANCEL = 3
-TIMEOUT_CANCEL = TIMEOUT_LEADER_CANCEL + TIMEOUT_ORPHAN_CANCEL + 1
-
+from .platform.darwin import cleanup_dead_process
 
 class Service:
     _service_wanted: trio.Event
@@ -105,53 +100,8 @@ class Service:
                 # `_service_wanted` itself. If the service crashed, we want to
                 # restart it straight away.
                 await self._process.wait()
-            # This `finally` block can be reached one of two ways:
-            #
-            # 1. The process exits, either because it was terminated by `.exit()` or because it stopped unexpectedly, or
-            # 2. The Trio cancel scope we're running in gets cancelled (e.g. because we got a `SIGINT` or `SIGTERM` ourselves), in which case the process is still running.
             finally:
-                with trio.move_on_after(TIMEOUT_CANCEL) as scope:
-                    self._log.debug(
-                        "cleaning up",
-                        pid=self._process.pid,
-                        returncode=self._process.returncode,
-                    )
-                    scope.shield = True
-                    if self._process.returncode is None:
-                        self._log.debug(
-                            "politely asking leader to quit",
-                            pid=self._process.pid,
-                            signal=self.signal,
-                        )
-                        self._process.send_signal(self.signal)
-                        with trio.move_on_after(TIMEOUT_LEADER_CANCEL):
-                            await self._process.wait()
-                    if self._process.returncode is None:
-                        self._log.debug("forcing leader to quit")
-                        self._process.send_signal(SIGKILL)
-                        await self._process.wait()
-
-                    try:
-                        await killpg_no_zombie(self._process.pid, SIGTERM, self._log)
-                    except ProcessLookupError:
-                        # the process cleaned up after itself
-                        pass
-                    else:
-                        self._log.warn("process left orphans")
-                        try:
-                            with trio.move_on_after(TIMEOUT_ORPHAN_CANCEL):
-                                while True:
-                                    await killpg_no_zombie(
-                                        self._process.pid, 0, self._log
-                                    )
-                                    await trio.sleep(0.1)
-                            await killpg_no_zombie(
-                                self._process.pid, SIGKILL, self._log
-                            )
-                        except ProcessLookupError:
-                            self._log.debug("all orphans exited")
-                        else:
-                            self._log.debug("forcibly killed orphans")
+                cleanup_dead_process(self._process, self.signal, self._log)
             self._process = None
             self._service_started = trio.Event()
 
@@ -175,6 +125,8 @@ class Service:
         self._log.debug("shutting down")
         await self.stop()
 
+    # ## Public API
+    # Any code that expects this service to be up and running should be wrapped in the `.use()` async context manager.
     @asynccontextmanager
     async def use(self):
         self._log.debug("use entered", existing_users=self._users)
@@ -194,8 +146,8 @@ class Service:
                 # unsetting _service_wanted.
                 await self._nursery.start(self._shutdown_timer)
 
+    # To stop the process, call `.stop()`. Note that if the service is still expected to be running (e.g. there is still an active caller of `.use()`, or the idle timeout hasn't completed yet) the process will start back up again.
     async def stop(self):
-        """Shut down the service, if it is running."""
         if self._process is not None:
             with trio.move_on_after(5):
                 self._log.debug("politely asking process to stop")
@@ -227,19 +179,3 @@ async def wait_for_port(port):
             await stream.aclose()
             break
         await trio.sleep(0.1)
-
-
-async def killpg_no_zombie(pgid, signal, logger):
-    for i in range(9, -1, -1):
-        try:
-            return killpg(pgid, signal)
-        except PermissionError:
-            logger.debug(
-                "got PermissionError trying to killpg",
-                pgid=pgid,
-                signal=signal,
-                remaining_tries=i,
-            )
-            if i == 0:
-                raise
-        await trio.sleep(0.05)
