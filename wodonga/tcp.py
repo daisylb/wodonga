@@ -3,6 +3,8 @@ import re
 import structlog
 import trio
 
+from . import service
+
 REDIR_RE = re.compile(
     r"([0-9a-f\:]+)\[([0-9]+)\] <- ([0-9a-f\:]+)\[([0-9]+)\] <- ([0-9a-f\:]+)\[([0-9]+)\]"
 )
@@ -46,42 +48,22 @@ async def get_real_target(stream: trio.SocketStream, logger):
     return m_target_ip, int(m_target_port)
 
 
-def tcp_handler_factory(service_dict):
-    async def tcp_connection_handler(stream):
-        print(stream.socket.getpeername(), stream.socket.getsockname())
-        logger = structlog.get_logger(
-            connection_id=f"{trio.current_time()}.{id(stream)}"
-        )
-        try:
-            target_ip, target_port = await get_real_target(stream, logger)
-        except ValueError:
-            logger.error("not found in lookup table")
-            await stream.aclose()
-            return
+def tcp_handler_factory(
+    service: service.Service, port: int, logger: structlog.BoundLogger
+):
+    outer_logger = logger
 
-        try:
-            service = service_dict[target_ip]
-        except KeyError:
-            logger.error("no registered service", ip=target_ip)
-            await stream.aclose()
-            return
-
+    async def tcp_connection_handler(stream: trio.SocketStream):
+        logger = outer_logger.bind(connection_id=f"{trio.current_time()}.{id(stream)}")
         async with service.use() as port_map:
-            try:
-                mapped_port = port_map[target_port]
-            except KeyError:
-                logger.error(
-                    "service doesn't use port", service=service, port=target_port
-                )
-                await stream.aclose()
-                return
+            mapped_port = port_map[port]
             try:
                 await proxy(stream, "::1", mapped_port)
             except OSError:
                 logger.error(
                     "Error connecting to service",
                     service=service,
-                    port=target_port,
+                    port=port,
                     mapped_port=mapped_port,
                     exc_info=True,
                 )

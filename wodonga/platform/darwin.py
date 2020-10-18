@@ -1,20 +1,57 @@
 # # Platform-specific code for Darwin (macOS)
-import trio
-from signal import Signals
-from structlog import BoundLogger
+import typing as t
+from functools import partial
 from os import killpg
-from signal import SIGINT, SIGKILL, SIGTERM
+from signal import SIGKILL, SIGTERM, Signals
+
+import trio
+from structlog import BoundLogger
+
+# ## Opening a socket
+
+firewall_helper_lock = trio.Lock()
+
+
+async def serve_tcp(
+    handler, port: int, *, host: str, handler_nursery: t.Optional[trio.Nursery] = None
+):
+    async with trio.open_nursery() as nursery:
+        listener = (
+            await nursery.start(
+                partial(
+                    trio.serve_tcp,
+                    handler=handler,
+                    host="::",
+                    port=0,
+                    handler_nursery=handler_nursery,
+                )
+            )
+        )[0]
+        _a, listen_port, _b, _c = listener.socket.getsockname()
+        async with firewall_helper_lock:
+            await trio.run_process(
+                (
+                    "/opt/socket-garden-darwin-firewall",
+                    str(host),
+                    str(port),
+                    str(listen_port),
+                )
+            )
+
+
+# ## Cleaning up after a dead process
 
 TIMEOUT_LEADER_CANCEL = 3
 TIMEOUT_ORPHAN_CANCEL = 3
 TIMEOUT_CANCEL = TIMEOUT_LEADER_CANCEL + TIMEOUT_ORPHAN_CANCEL + 1
 
-# ## Cleaning up after a dead process
 # We need to handle two situations here:
 #
 # 1. The process exits, either because it was terminated by `.exit()` or because it stopped unexpectedly, or
 # 2. The Trio cancel scope we're running in gets cancelled (e.g. because we got a `SIGINT` or `SIGTERM` ourselves), in which case the process is still running.
-def cleanup_dead_process(process: trio.Process, *, signal: Signals, logger: BoundLogger):
+async def cleanup_dead_process(
+    process: trio.Process, *, signal: Signals, logger: BoundLogger
+):
     with trio.move_on_after(TIMEOUT_CANCEL) as scope:
         logger.debug(
             "cleaning up",
@@ -32,7 +69,7 @@ def cleanup_dead_process(process: trio.Process, *, signal: Signals, logger: Boun
             process.send_signal(signal)
             with trio.move_on_after(TIMEOUT_LEADER_CANCEL):
                 await process.wait()
-        
+
         # If the process is _still_ running, we send it SIGKILL (which halts it immediately).
         if process.returncode is None:
             logger.debug("forcing process to quit")
@@ -64,6 +101,7 @@ def cleanup_dead_process(process: trio.Process, *, signal: Signals, logger: Boun
             else:
                 logger.debug("forcibly killed orphans")
 
+
 # ## Wrapping `killpg`
 # macOS has this fun\*\*\* little quirk where if you try to `killpg` a process group, and there's a process in that group that's died but not been reaped, you get a `PermissionError`. Since we're dealing with orphan processes, they get reaped by launchd, leading to a fun little race condition.
 async def killpg_no_zombie(pgid, signal, logger):
@@ -82,4 +120,3 @@ async def killpg_no_zombie(pgid, signal, logger):
             if i == 0:
                 raise
         await trio.sleep(0.05)
-

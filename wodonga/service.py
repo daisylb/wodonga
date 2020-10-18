@@ -1,11 +1,13 @@
 import typing as t
 from contextlib import asynccontextmanager
-from socket import AF_INET6
 from signal import SIGINT
+from socket import AF_INET6
 
 import trio
 from structlog import BoundLogger
+
 from .platform.darwin import cleanup_dead_process
+
 
 class Service:
     _service_wanted: trio.Event
@@ -20,6 +22,7 @@ class Service:
     def __init__(
         self,
         *,
+        name,
         command,
         workdir,
         ports,
@@ -28,6 +31,7 @@ class Service:
         env={},
         signal=SIGINT,
     ):
+        self.name = name
         self.command = command
         self.workdir = workdir
         self.env = env
@@ -101,7 +105,9 @@ class Service:
                 # restart it straight away.
                 await self._process.wait()
             finally:
-                cleanup_dead_process(self._process, self.signal, self._log)
+                await cleanup_dead_process(
+                    self._process, signal=self.signal, logger=self._log
+                )
             self._process = None
             self._service_started = trio.Event()
 
