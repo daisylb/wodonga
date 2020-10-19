@@ -18,6 +18,7 @@ class Service:
     _nursery: trio.Nursery
     _log: BoundLogger
     signal: int
+    _executable_last_started: float = 0.0
 
     def __init__(
         self,
@@ -57,6 +58,8 @@ class Service:
             await self._service_wanted.wait()
 
             # TODO: flapping detection / exponential backoff
+            await trio.sleep_until(self._executable_last_started + 10.0)
+            self._executable_last_started = trio.current_time()
 
             # We start off by constructing a mapping between the ports we're
             # listening on, and the ports we're expecting the service to
